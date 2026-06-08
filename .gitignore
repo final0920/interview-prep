@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Secrets and private data (NEVER commit)
+config.local.yaml
+config.yaml
+/data/
+out/
+*.db
+*.sqlite
+*.sqlite3
+
+# Model / embedding caches
+*.npy
+.cache/
+hf_cache/
+models/
+
+# Frontend
+web/node_modules/
+web/dist/
+web/.vite/
+
+# OS
+.DS_Store
+Thumbs.db

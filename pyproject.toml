@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interview-coach"
+version = "0.1.0"
+description = "Evidence-grounded mock-interview coach (LangGraph + local RAG + VCP-inspired memory)"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic>=2",
+  "pyyaml",
+  "numpy",
+  "httpx",
+  "openai>=1.40",
+  "langgraph>=0.2",
+  "langgraph-checkpoint",
+  "langchain-core",
+  "rank-bm25",
+  "tree-sitter>=0.23",
+  "tree-sitter-language-pack",
+  "pymupdf",
+  "fastapi",
+  "uvicorn",
+  "jinja2",
+]
+
+[project.optional-dependencies]
+# Heavy local models (GPU embeddings + reranker). Code degrades gracefully if absent.
+embeddings = ["sentence-transformers", "torch"]
+dev = ["pytest"]
+
+[project.scripts]
+coach = "coach.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["coach*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["ignore::DeprecationWarning"]

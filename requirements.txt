@@ -1,0 +1,24 @@
+# All deps below are already present in the `iprep` conda env (D:\anaconda3\envs\iprep).
+# For a fresh environment: pip install -r requirements.txt
+pydantic>=2
+pyyaml
+numpy
+httpx
+openai>=1.40
+langgraph>=0.2
+langgraph-checkpoint
+langchain-core
+rank-bm25
+tree-sitter>=0.23
+tree-sitter-language-pack
+pymupdf
+fastapi
+uvicorn
+jinja2
+
+# Optional heavy (local GPU embeddings / reranker). Code degrades to hashing fallback if absent.
+sentence-transformers
+torch
+
+# Dev
+pytest

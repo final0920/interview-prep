@@ -1,0 +1,58 @@
+# interview-coach configuration template.
+# Copy to config.local.yaml (gitignored) and fill in secrets; config.local.yaml overrides this file.
+
+llm:
+  base_url: "https://gpt.pkpp.cn/v1"   # OpenAI-compatible gateway. Drop or adjust /v1 if the gateway rejects it.
+  api_key: "REPLACE_ME"
+  model: "gpt-5"
+  reasoning_effort: "high"             # high | medium | low. Sent via extra_body; ignored if unsupported.
+  cheap_model: "gpt-5"                 # Cheaper model for folding/summarize/classify. Point to a smaller model if available.
+  timeout_s: 120
+  max_retries: 3
+
+embeddings:
+  model: "BAAI/bge-m3"
+  device: "cuda"                       # cuda | cpu. Falls back cpu -> hashing if unavailable.
+  reranker: "BAAI/bge-reranker-v2-m3"
+  use_reranker: true
+  cache_dir: "data/emb_cache"
+
+retrieval:
+  top_k: 20
+  rerank_top_k: 8
+  rrf_k: 60
+  geodesic: false                      # feature-flag: tag co-occurrence geodesic rerank (sqlite fallback)
+
+memory:
+  db_path: "data/memory.db"
+  fold: false                          # feature-flag: context folding V2 (distant low-relevance summarization)
+  tidal: false                         # feature-flag: tidal three-timeline recall
+  placeholders: true                   # inject {{profile}}/{{weakpoints}}/{{resume}} into prompts
+
+ingest:
+  evidence_path: "data/evidence_units.jsonl"
+  vector_path: "data/vector_index"
+  noise_globs:
+    - "**/CMakeFiles/**"
+    - "**/build/**"
+    - "**/cmake-build-*/**"
+    - "**/*.o"
+    - "**/*.obj"
+    - "**/*.a"
+    - "**/*.so"
+    - "**/*.lib"
+    - "**/*.class"
+    - "**/node_modules/**"
+    - "**/.git/**"
+
+interview:
+  rounds: ["tech_basics", "project_deep_dive", "sql", "scenario", "hr"]
+  checkpoint_db: "data/interview_checkpoints.db"
+  max_followups: 3
+
+target_role:
+  name: "AI Application / LLM Engineering"
+  benchmark_resumes: "data/competitor_resumes"   # parsed from the competitor resume pack
+
+paths:
+  data_dir: "data"
