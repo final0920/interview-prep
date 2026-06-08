@@ -241,6 +241,16 @@ class TestPIIGate:
         assert "details" in result  # surrounding text preserved
         assert "[REDACTED]" in result
 
+    def test_detects_spaced_phone_bypass(self):
+        # gate now backed by coach.pii: spaced digits must still be caught
+        from coach.knowledge.grow import _looks_like_pii
+        assert _looks_like_pii("reach us at 138 1234 5678")
+
+    def test_redact_clean_text_unchanged(self):
+        from coach.knowledge.grow import _redact_pii
+        clean = "The algorithm runs in O(n log n) time."
+        assert _redact_pii(clean) == clean
+
 
 # ---------------------------------------------------------------------------
 # grow.py: grow_topic end-to-end

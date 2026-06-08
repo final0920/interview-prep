@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from coach.config import get
+from coach.retrieval.embed import tokenize as _tokenize
 from coach.retrieval.hybrid import rrf_fuse
 from coach.schemas import EvidenceUnit, Channel, RetrievalHit, SourceScope
 
@@ -159,20 +160,6 @@ def _load_public_units(kb_dir: Optional[Path] = None) -> list[EvidenceUnit]:
 # ---------------------------------------------------------------------------
 # BM25 index over public units (built on demand, no caching needed for tests)
 # ---------------------------------------------------------------------------
-
-def _tokenize(text: str) -> list[str]:
-    """Same tokenizer as retrieval.embed.tokenize for consistent vocabulary."""
-    toks: list[str] = []
-    for m in re.findall(r"[A-Za-z][A-Za-z0-9_]*", text):
-        for p in re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+", m):
-            toks.append(p.lower())
-    for seg in re.findall(r"[一-鿿]+", text):
-        if len(seg) == 1:
-            toks.append(seg)
-        else:
-            toks.extend(seg[i:i + 2] for i in range(len(seg) - 1))
-    return toks
-
 
 def _bm25_fallback(corpus: list[list[str]], query: list[str],
                    k1: float = 1.5, b: float = 0.75) -> list[float]:

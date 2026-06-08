@@ -171,6 +171,9 @@ def _split_by_brace_blocks(lines: list[str]) -> list[tuple[int, int, str]]:
         if depth == 0 and opens > 0:
             block_start = i
         depth += opens - closes
+        # A stray '}' (e.g. inside a string literal) can push depth below 0;
+        # clamp so the next real block-open is tracked instead of being dropped.
+        depth = max(0, depth)
         if depth <= 0 and block_start is not None:
             depth = 0
             block_lines = lines[block_start: i + 1]
@@ -277,8 +280,7 @@ def chunk_pdf(pdf_path: str) -> list[EvidenceUnit]:
     except ImportError:
         return []
 
-    import re as _re
-    _PII_RE = _re.compile(r"(1[3-9]\d{9}|[\w.\-]+@[\w.\-]+\.\w+)")
+    from coach.pii import looks_like_pii
 
     units: list[EvidenceUnit] = []
     doc = fitz.open(pdf_path)
@@ -291,7 +293,7 @@ def chunk_pdf(pdf_path: str) -> list[EvidenceUnit]:
                 sym = f"page{pno + 1}:block{int(blk[5])}"
                 uid = _sha(snippet, pdf_path, pno + 1)
                 tags: list[str] = []
-                if _PII_RE.search(snippet):
+                if looks_like_pii(snippet):
                     tags.append("has_pii")
                 units.append(EvidenceUnit(
                     id=uid,

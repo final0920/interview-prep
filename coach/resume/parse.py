@@ -10,60 +10,19 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from coach.pii import redact as _pii_redact
 from coach.schemas import ResumeProfile, ResumeProject
-
-
-# ---------------------------------------------------------------------------
-# PII patterns: phone / email / ID card / bank card
-# Order matters: ID card (18 digits) must precede bank card (16-19 digits)
-# ---------------------------------------------------------------------------
-
-_PII_PATTERNS: list[tuple[str, str, str]] = [
-    ("phone",     r"(?<!\d)1[3-9]\d{9}(?!\d)",                                  "<PHONE>"),
-    ("email",     r"[\w.\-]+@[\w.\-]+\.\w+",                                     "<EMAIL>"),
-    ("id_card",
-     r"(?<!\d)[1-9]\d{5}(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])\d{3}[\dXx](?![\dXx])",
-     "<ID_CARD>"),
-    ("bank_card", r"(?<!\d)\d{16,19}(?!\d)",                                     "<BANK_CARD>"),
-]
 
 
 def redact_pii(text: str) -> tuple[str, dict]:
     """Regex-redact PII (phone/email/ID card/bank card) with placeholder tokens.
 
-    Returns (redacted_text, coverage_dict).  coverage_dict keys:
-        pii_masked  : always True
-        counts      : {kind: n, ...}
-        total_pii   : total PII matches found
-        masked_pii  : same (all are replaced)
-        coverage    : 1.0 (redact-on-detect => always 100 %)
-        spans       : [{type, placeholder, raw_len}, ...] for auditing
+    Thin wrapper over :func:`coach.pii.redact` (the single source of truth) so
+    detection/redaction logic stays in one place. Returns
+    ``(redacted_text, report)``; the report carries actual per-kind counts and
+    a real coverage ratio (masked / detected), not a hardcoded 1.0.
     """
-    if text is None:
-        text = ""
-    masked = str(text)
-    counts = {key: 0 for key, _, _ in _PII_PATTERNS}
-    spans: list[dict] = []
-
-    for key, pat, placeholder in _PII_PATTERNS:
-        rx = re.compile(pat)
-
-        def _sub(m, _k=key, _ph=placeholder):
-            counts[_k] += 1
-            spans.append({"type": _k, "placeholder": _ph, "raw_len": len(m.group(0))})
-            return _ph
-
-        masked = rx.sub(_sub, masked)
-
-    total = sum(counts.values())
-    return masked, {
-        "pii_masked": True,
-        "counts": counts,
-        "total_pii": total,
-        "masked_pii": total,
-        "coverage": 1.0,
-        "spans": spans,
-    }
+    return _pii_redact(text)
 
 
 # ---------------------------------------------------------------------------

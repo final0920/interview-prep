@@ -12,8 +12,8 @@ Divides the episode timeline into three tidal buckets:
 Each bucket is scored by: time_decay x resonance x relevance, then the
 top entries from each bucket are fused and returned ranked by combined score.
 
-vector_store may be None (tidal works without vectors; resonance falls back
-to pure tag overlap in that case).
+relevance is tag-overlap resonance (no dense vector store required).
+vector_store is accepted for API compatibility but ignored.
 """
 from __future__ import annotations
 
@@ -114,8 +114,7 @@ def _tidal_score(
     """Combined tidal score: time_decay * resonance * relevance.
 
     resonance  -- tag overlap between seed_tags and ep.tags
-    relevance  -- dense cosine similarity if vector_store available,
-                  else falls back to tag overlap again
+    relevance  -- tag-overlap resonance (vector_store is unused)
     """
     decay = score_recency(age_days, half_life_days=14.0)   # 14-day half-life for tidal
 
@@ -124,31 +123,17 @@ def _tidal_score(
     else:
         resonance = 1.0
 
-    relevance = _dense_relevance(ep, seed_tags, vector_store)
+    relevance = _tag_relevance(ep, seed_tags)
 
     return decay * resonance * relevance
 
 
-def _dense_relevance(
-    ep: MemoryEpisode,
-    seed_tags: list[str],
-    vector_store,
-) -> float:
-    """Return a [0,1] relevance score using dense embeddings if available.
+def _tag_relevance(ep: MemoryEpisode, seed_tags: list[str]) -> float:
+    """Return a tag-overlap resonance score in [1.0, 2.0].
 
-    Falls back to tag overlap when vector_store is None or lookup fails.
+    Uses seed_tags vs ep.tags Jaccard-style overlap as the relevance signal.
+    Returns 1.0 (neutral) when seed_tags is empty.
     """
-    if vector_store is None or not seed_tags:
-        return 1.0 + tag_overlap(seed_tags, ep.tags) if seed_tags else 1.0
-
-    # Try to look up this episode's vector by id.
-    try:
-        if ep.id is None:
-            return 1.0
-        # VectorStore.search expects a query vector; we approximate by
-        # treating a tag-bag as the query signal (no embedding call here).
-        # Full dense support would require the embedder to be passed in;
-        # keep tidal self-contained by using tag overlap as proxy.
+    if seed_tags:
         return 1.0 + tag_overlap(seed_tags, ep.tags)
-    except Exception:
-        return 1.0
+    return 1.0

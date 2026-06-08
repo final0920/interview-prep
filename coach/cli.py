@@ -57,17 +57,13 @@ def _cmd_resume(args: argparse.Namespace) -> int:
 
 
 def _cmd_review(args: argparse.Namespace) -> int:
-    from coach.config import load_config, data_dir
-    from coach.storage.sqlite import connect, init_schema
+    from coach.config import load_config
+    from coach.review.quality_gate import quality_report
     import json
 
     cfg = load_config()
-    # Show gaps and quality report; storage must exist
-    from coach.review.gap import find_gaps
-    from coach.review.quality_gate import quality_report
-    # Load questions + evals from the evidence DB (graceful empty)
+    # Show the quality report (graceful empty until cards/questions exist).
     try:
-        from coach.review.quality_gate import quality_report
         report = quality_report([], [], [], cfg)
         print(json.dumps(report, ensure_ascii=False, indent=2))
     except Exception as exc:
@@ -170,7 +166,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # serve
     p = sub.add_parser("serve", help="start the FastAPI server")
-    p.add_argument("--host", default="0.0.0.0")
+    p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=8000)
     p.add_argument("--reload", action="store_true")
     p.set_defaults(_handler=_cmd_serve)

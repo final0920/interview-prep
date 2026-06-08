@@ -107,7 +107,7 @@ class TestDispatch:
         from coach.cli import _cmd_serve
         args = self._parse(["serve"])
         assert args._handler is _cmd_serve
-        assert args.host == "0.0.0.0"
+        assert args.host == "127.0.0.1"  # localhost-only by default (security)
         assert args.port == 8000
         assert not args.reload
 

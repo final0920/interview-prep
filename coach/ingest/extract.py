@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import fnmatch
 import hashlib
+import stat
 import zipfile
 from pathlib import Path
 
 # ---- Zip safety limits -------------------------------------------------------
-_MAX_TOTAL_UNCOMPRESSED = 8 * 1024 ** 3   # 8 GB
-_MAX_FILES = 400_000
+_MAX_TOTAL_UNCOMPRESSED = 512 * 1024 ** 2  # 512 MB total uncompressed
+_MAX_FILES = 20_000
 _MAX_FILE_SIZE = 5 * 1024 ** 2            # 5 MB per member
 _MAX_RATIO = 200                          # compression ratio bomb guard
 
@@ -103,14 +104,27 @@ def safe_unzip(
                 continue
             n_files += 1
             total_unc += info.file_size
-            # zip-slip check
+            # reject symlinks / other non-regular members. The high 16 bits of
+            # external_attr hold the unix st_mode for unix-created zips. Entries
+            # written via zipfile.writestr carry no file-type bits (S_IFMT == 0),
+            # so only reject when a type is set and it is not a regular file.
+            mode = info.external_attr >> 16
+            if stat.S_ISLNK(mode) or (
+                stat.S_IFMT(mode) and not stat.S_ISREG(mode)
+                and not stat.S_ISDIR(mode)
+            ):
+                raise ValueError(
+                    f"non-regular zip entry rejected: {info.filename!r}"
+                )
+            # zip-slip check: resolved path must be dest itself or below it.
+            # A plain prefix check lets a sibling like '<dest>_evil' escape.
             member_name = _fix_cp437_name(info.filename)
             resolved = (dest / member_name).resolve()
-            if not str(resolved).startswith(str(dest)):
+            if not (resolved == dest or dest in resolved.parents):
                 raise ValueError(f"zip-slip attempt: {info.filename!r}")
-            # compression-ratio bomb (only check large members)
-            if info.compress_size > 0 and info.file_size > 1024 ** 2:
-                ratio = info.file_size / max(info.compress_size, 1)
+            # compression-ratio bomb: check every compressed member (no size gate)
+            if info.compress_size > 0:
+                ratio = info.file_size / info.compress_size
                 if ratio > _MAX_RATIO:
                     raise RuntimeError(
                         f"zip-bomb: ratio {ratio:.0f}x in {info.filename!r}"
@@ -118,7 +132,8 @@ def safe_unzip(
 
         if total_unc > _MAX_TOTAL_UNCOMPRESSED:
             raise RuntimeError(
-                f"zip-bomb: total uncompressed {total_unc / 1024**3:.1f} GB > 8 GB limit"
+                f"zip-bomb: total uncompressed {total_unc / 1024**2:.0f} MB "
+                f"> {_MAX_TOTAL_UNCOMPRESSED // 1024**2} MB limit"
             )
         if n_files > _MAX_FILES:
             raise RuntimeError(
@@ -137,13 +152,18 @@ def safe_unzip(
                 continue
 
             out_path = (dest / member_name).resolve()
-            # second slip guard (paranoid)
-            if not str(out_path).startswith(str(dest)):
+            # second slip guard (paranoid): must be dest or strictly below it
+            if not (out_path == dest or dest in out_path.parents):
                 continue
 
+            # bounded read: never materialise more than the per-member cap,
+            # even if the declared file_size lies about the real content size
             try:
-                data = zf.read(info)
+                with zf.open(info, "r") as fh:
+                    data = fh.read(_MAX_FILE_SIZE + 1)
             except Exception:
+                continue
+            if len(data) > _MAX_FILE_SIZE:
                 continue
 
             if _is_binary(data):

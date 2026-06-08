@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
 from coach.config import get
+from coach.pii import _PATTERNS, looks_like_pii as pii_looks_like, redact as pii_redact
 
 if TYPE_CHECKING:
     from coach.llm.gateway import LLMGateway
@@ -20,27 +21,27 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 _PUBLIC_KB_DIR = _REPO_ROOT / "public_kb"
 
 # ---------------------------------------------------------------------------
-# PII gate -- block any generated content that looks like personal data
+# PII gate -- block any generated content that looks like personal data.
+# Detection/redaction logic lives in coach.pii (single source of truth);
+# these thin wrappers keep grow.py's internal API stable.
 # ---------------------------------------------------------------------------
 
-_PII_PATTERNS = [
-    r"1[3-9]\d{9}",           # Chinese mobile
-    r"[\w.+-]+@[\w-]+\.[\w.-]+",  # email
-    r"\b\d{17}[\dXx]\b",     # Chinese ID card
-    r"\b\d{16,19}\b",         # bank card / long number
-]
-
-
 def _looks_like_pii(text: str) -> bool:
-    return any(re.search(p, text or "") for p in _PII_PATTERNS)
+    return pii_looks_like(text)
 
 
 def _redact_pii(text: str) -> str:
-    """Replace PII matches with [REDACTED] rather than discarding the whole body."""
-    s = text or ""
-    for p in _PII_PATTERNS:
-        s = re.sub(p, "[REDACTED]", s)
-    return s
+    """Replace PII matches with [REDACTED] rather than discarding the whole body.
+
+    Uses the shared coach.pii detector (NFKC-normalised, separator-tolerant)
+    then collapses its typed placeholders to a single [REDACTED] marker.
+    """
+    masked, report = pii_redact(text)
+    if report["total_pii"] == 0:
+        return text or ""
+    for _, _rx, placeholder in _PATTERNS:
+        masked = masked.replace(placeholder, "[REDACTED]")
+    return masked
 
 
 # ---------------------------------------------------------------------------

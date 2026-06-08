@@ -275,26 +275,24 @@ def build_graph(deps: Deps):
 
 
 # ---------------------------------------------------------------------------
-# Session helpers (build deps from cfg; reuse a per-path checkpointer)
+# Session helpers (build deps from cfg)
 # ---------------------------------------------------------------------------
-
-# Cache (checkpointer, compiled graph, deps) per checkpoint path within a
-# process so step() resumes the same session interrupt across calls. Heavy
-# objects intentionally kept out of graph State.
-_ENGINE_CACHE: dict[str, tuple[Any, Any, Deps]] = {}
-
-
-def _checkpoint_key(cfg: dict) -> str:
-    return str(get(cfg, "interview.checkpoint_db", ":interview-mem:"))
-
 
 def build_deps(cfg: dict, *, gateway=None, retriever=None, memory=None, checkpointer=None) -> Deps:
     """Construct a Deps bundle from config, with optional explicit overrides.
 
     Live wiring (gateway/retriever/memory) is supplied by the caller (server/
-    CLI) because it pulls in heavy modules; when omitted the engine still runs
-    with deterministic fallbacks (useful for smoke/offline use).
+    CLI) because it pulls in heavy modules; when omitted we construct the real
+    ``EvidenceRetriever`` (offline-safe: it yields no hits when the corpus is
+    absent) so interviews are grounded by default, while the engine still runs
+    with deterministic fallbacks for everything else.
     """
+    if retriever is None:
+        try:
+            from coach.retrieval.retriever import EvidenceRetriever
+            retriever = EvidenceRetriever(cfg)
+        except Exception:
+            retriever = None
     return Deps(
         gateway=gateway,
         retriever=retriever,
@@ -305,20 +303,17 @@ def build_deps(cfg: dict, *, gateway=None, retriever=None, memory=None, checkpoi
 
 
 def _engine(cfg: dict, deps: Optional[Deps] = None):
-    """Return (compiled_graph, deps) for cfg, reusing the cached checkpointer."""
-    key = _checkpoint_key(cfg)
-    if deps is not None:
-        app = build_graph(deps)
-        _ENGINE_CACHE[key] = (deps.checkpointer, app, deps)
-        return app, deps
-    cached = _ENGINE_CACHE.get(key)
-    if cached is not None:
-        _saver, app, d = cached
-        return app, d
-    d = build_deps(cfg)
-    app = build_graph(d)
-    _ENGINE_CACHE[key] = (d.checkpointer, app, d)
-    return app, d
+    """Return (compiled_graph, deps) for cfg.
+
+    The graph is recompiled per call (cheap: it's just node/edge wiring). Session
+    continuity comes from ``deps.checkpointer`` keyed on ``thread_id`` — callers
+    (server/CLI) reuse one ``Deps`` instance across ``start_session``/``step`` so
+    the same saver resumes the session. No process-global cache (it provided no
+    benefit on the server path, where deps are always passed, and was a
+    multi-session footgun).
+    """
+    d = deps if deps is not None else build_deps(cfg)
+    return build_graph(d), d
 
 
 def _interrupt_payload(result: dict) -> Optional[dict]:
@@ -360,6 +355,26 @@ def step(session_id: str, user_answer: str, cfg: dict, *, deps: Optional[Deps] =
     gcfg = {"configurable": {"thread_id": session_id}}
     result = app.invoke(Command(resume=user_answer), config=gcfg)
     return _read_state(app, gcfg, result, session_id)
+
+
+def get_session_state(session_id: str, cfg: dict, deps: Optional[Deps] = None) -> Optional[InterviewState]:
+    """Re-hydrate a session's persisted state from the checkpointer (read-only).
+
+    Returns the ``InterviewState`` for ``session_id`` without resuming the graph,
+    or ``None`` when the session is unknown / the checkpointer has no state for
+    that thread. Never raises (callers degrade gracefully).
+    """
+    try:
+        app, _d = _engine(cfg, deps)
+        gcfg = {"configurable": {"thread_id": session_id}}
+        snap = app.get_state(gcfg)
+        values = {k: v for k, v in (snap.values or {}).items() if k != "_pending_answer"}
+        if not values:
+            return None
+        values.setdefault("session_id", session_id)
+        return _dict_to_state(values)
+    except Exception:
+        return None
 
 
 def _read_state(app, gcfg: dict, result: dict, sid: str) -> InterviewState:

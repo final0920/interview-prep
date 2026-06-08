@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from coach.llm.gateway import extract_json
+from coach.retrieval.embed import tokenize
 from coach.schemas import ClaimCheck, ClaimVerdict, EvidenceUnit
 
 # --- lexical signals --------------------------------------------------------
@@ -42,17 +44,6 @@ _DECISION_HINT = re.compile(
     r"选型|选择|采用|决定|改用|引入|替换|权衡|取舍|为了|因此|所以|方案|架构|设计为|拆分|下沉",
     re.I,
 )
-
-
-def tokenize(text: str) -> list[str]:
-    """Mixed zh/en tokenizer: camel/snake split + lowercase; Chinese char + 2-gram."""
-    toks: list[str] = []
-    for m in re.findall(r"[A-Za-z][A-Za-z0-9_]*", text or ""):
-        for p in re.findall(r"[A-Z]?[a-z0-9]+|[A-Z]+", m):
-            toks.append(p.lower())
-    for seg in re.findall(r"[一-鿿]+", text or ""):
-        toks.extend([seg] if len(seg) == 1 else [seg[i:i + 2] for i in range(len(seg) - 1)])
-    return toks
 
 
 def _keywords(text: str) -> set[str]:
@@ -236,7 +227,6 @@ def _llm_nli(claim_text: str, evidence_texts: list[str], gateway) -> Optional[di
         '{"label":"entail|neutral|contradict","score":0.0,"reason":"简述依据"}'
     )
     try:
-        from coach.llm.gateway import extract_json
         raw = gateway.complete([
             {"role": "system", "content": _LLM_SYS},
             {"role": "user", "content": user},
@@ -261,17 +251,21 @@ def check_claims(
     gateway=None,
     *,
     k: int = 5,
+    max_llm_claims: int = 5,
 ) -> list[ClaimCheck]:
     """Ground each claim against evidence, returning a ClaimCheck per claim.
 
     L1 recalls top-k evidence by lexical overlap; with no hit the claim is
     ``needs_evidence``. L2 picks the strongest relation among the hits offline
     (contradict > entail > best-score). If a ``gateway`` is provided it refines
-    the verdict via LLM-judge, falling back to the offline label on any failure.
+    the verdict via LLM-judge for the first ``max_llm_claims`` claims only,
+    falling back to the offline label on any failure or beyond the cap.
+    The offline heuristic path (gateway=None) is always fully exercised.
     The matched evidence ids and the relation score populate the ClaimCheck.
     """
     index = _build_index(evidence)
     results: list[ClaimCheck] = []
+    llm_calls = 0
     for claim in claims:
         hits = _l1_retrieve(claim, index, k=k)
         if not hits:
@@ -299,8 +293,9 @@ def check_claims(
 
         label = best["label"]
         score = float(best["score"])
-        if gateway is not None:
+        if gateway is not None and llm_calls < max_llm_claims:
             judged = _llm_nli(claim, ev_texts, gateway)
+            llm_calls += 1
             if judged is not None:
                 label = judged["label"]
                 score = float(judged.get("score", score))

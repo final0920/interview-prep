@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from coach.llm.gateway import extract_json
 from coach.schemas import EvidenceUnit, ResumeProfile, SkillGap, SkillGapCategory
 
 from coach.resume.analyze import (
@@ -212,13 +213,10 @@ def optimize(
 
         try:
             prompt = _build_star_prompt(exp, relevant_ev, target_role)
-            from coach.schemas import AnswerEvaluation  # import here to avoid circular at module level
-
             raw = gateway.complete(
                 [{"role": "system", "content": _RESUME_SYS},
                  {"role": "user",   "content": prompt}],
             )
-            from coach.llm.gateway import extract_json
             rewrite = extract_json(raw) or None
             if rewrite:
                 # sanitise citations: only allow refs from relevant_ev

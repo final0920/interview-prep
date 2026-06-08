@@ -137,6 +137,51 @@ class TestSafeUnzip:
         with pytest.raises(ValueError, match="zip-slip"):
             safe_unzip(z, dest, [])
 
+    def test_sibling_prefix_slip_rejected(self, tmp_path):
+        # dest=.../proj ; a member resolving to a SIBLING that merely shares the
+        # 'proj' prefix (.../proj_evil) must be rejected. A naive
+        # str(resolved).startswith(str(dest)) guard would let this escape.
+        dest = tmp_path / "proj"
+        z = tmp_path / "sibling.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.writestr("../proj_evil/x.txt", b"pwned")
+        with pytest.raises(ValueError, match="zip-slip"):
+            safe_unzip(z, dest, [])
+
+    def test_symlink_member_rejected(self, tmp_path):
+        # an entry whose unix mode (external_attr >> 16) is a symlink must be
+        # rejected before any extraction happens.
+        import stat
+        z = tmp_path / "link.zip"
+        with zipfile.ZipFile(z, "w") as zf:
+            zi = zipfile.ZipInfo("link")
+            zi.external_attr = (stat.S_IFLNK | 0o777) << 16
+            zf.writestr(zi, b"/etc/passwd")
+        dest = tmp_path / "out"
+        with pytest.raises(ValueError, match="non-regular"):
+            safe_unzip(z, dest, [])
+
+    def test_ratio_bomb_at_1mb_boundary(self, tmp_path):
+        # ~1 MB of identical bytes compresses far beyond the 200x ratio cap.
+        # The old guard only ran the ratio check for members > 1 MB; this
+        # member sits right at the boundary and must still be rejected.
+        z = tmp_path / "bomb.zip"
+        with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("big.txt", b"A" * (1024 ** 2))
+        dest = tmp_path / "out"
+        with pytest.raises(RuntimeError, match="zip-bomb"):
+            safe_unzip(z, dest, [])
+
+    def test_ratio_bomb_below_old_1mb_gate(self, tmp_path):
+        # a 500 KB highly-compressible member is under the old > 1 MB precondition
+        # but its ratio exceeds the cap -- the closed gap means it is now rejected.
+        z = tmp_path / "bomb_small.zip"
+        with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("small.txt", b"A" * (500 * 1024))
+        dest = tmp_path / "out"
+        with pytest.raises(RuntimeError, match="zip-bomb"):
+            safe_unzip(z, dest, [])
+
     def test_noise_filtered(self, tmp_path):
         z = self._make_zip(tmp_path, {
             "src/main.py": b"x = 1",
@@ -196,6 +241,23 @@ class TestSplitByBraceBlocks:
         start, end, text = blocks[0]
         assert start == 1
         assert end == 2
+
+    def test_stray_close_brace_does_not_drop_next_block(self):
+        # A brace appearing inside a string literal (e.g. a printed '}') makes
+        # the naive depth counter go negative; without clamping, the block that
+        # follows is silently dropped. Clamping depth to >=0 keeps it.
+        lines = [
+            'void a() {',
+            '    printf("}");',   # stray close-brace char inside a string
+            '}',
+            'void b() {',
+            '    return;',
+            '}',
+        ]
+        blocks = _split_by_brace_blocks(lines)
+        texts = [t for _, _, t in blocks]
+        assert any("void a()" in t for t in texts)
+        assert any("void b()" in t for t in texts), "second block was dropped"
 
 
 # ============================================================

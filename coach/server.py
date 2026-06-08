@@ -17,17 +17,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from typing import Any, Callable, Optional
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from coach.config import get, load_config
-from coach.interview.graph import Deps, start_session, step
+from coach.interview.graph import Deps, get_session_state, start_session, step
 from coach.schemas import InterviewState
 
+logger = logging.getLogger("coach.server")
+
 app = FastAPI(title="interview-coach", version="0.1.0")
+
+# Cap on candidate answer length to bound prompt size / abuse (chars).
+MAX_ANSWER_LEN = 20000
 
 
 # ---------------------------------------------------------------------------
@@ -79,8 +85,9 @@ def _default_deps(cfg: dict) -> Deps:
 
     A real LLM gateway is only constructed when an API key is present; without
     it the interview engine uses its deterministic fallbacks (no network). The
-    retriever is left None here (the heavy hybrid wiring is opt-in); memory is a
-    sqlite store when a path is configured.
+    retriever is the real ``EvidenceRetriever`` (offline-safe: empty results when
+    the evidence corpus/index is absent) so production interviews are grounded;
+    memory is a sqlite store when a path is configured.
     """
     gateway = None
     api_key = get(cfg, "llm.api_key")
@@ -90,6 +97,13 @@ def _default_deps(cfg: dict) -> Deps:
             gateway = LLMGateway(cfg)
         except Exception:
             gateway = None
+
+    retriever = None
+    try:
+        from coach.retrieval.retriever import EvidenceRetriever
+        retriever = EvidenceRetriever(cfg)
+    except Exception:
+        retriever = None
 
     memory = None
     db_path = get(cfg, "memory.db_path")
@@ -102,7 +116,7 @@ def _default_deps(cfg: dict) -> Deps:
 
     return Deps(
         gateway=gateway,
-        retriever=None,
+        retriever=retriever,
         memory=memory,
         checkpointer=None,
         max_followups=int(get(cfg, "interview.max_followups", 3)),
@@ -127,7 +141,7 @@ class StartReq(BaseModel):
 
 class AnswerReq(BaseModel):
     session_id: str
-    answer: str = ""
+    answer: str = Field(default="", max_length=MAX_ANSWER_LEN)
 
 
 def _question_payload(state: InterviewState) -> Optional[dict]:
@@ -149,8 +163,9 @@ def interview_start(req: StartReq) -> dict:
     role = req.target_role or get(cfg, "target_role.name", "")
     try:
         state = start_session(role, cfg, deps=get_deps())
-    except Exception as exc:  # noqa: BLE001
-        return _err(f"failed to start session: {exc}")
+    except Exception:  # noqa: BLE001
+        logger.exception("interview_start failed")
+        return _err("failed to start session")
     return _ok({
         "session_id": state.session_id,
         "question": _question_payload(state),
@@ -163,8 +178,9 @@ def interview_answer(req: AnswerReq) -> dict:
     cfg = get_cfg()
     try:
         state = step(req.session_id, req.answer, cfg, deps=get_deps())
-    except Exception as exc:  # noqa: BLE001
-        return _err(f"failed to submit answer: {exc}")
+    except Exception:  # noqa: BLE001
+        logger.exception("interview_answer failed")
+        return _err("failed to submit answer")
     last = state.turns[-1] if state.turns else None
     evaluation = (last.evaluation.model_dump(mode="json")
                   if last and last.evaluation else None)
@@ -179,19 +195,14 @@ def interview_answer(req: AnswerReq) -> dict:
 def interview_get(session_id: str) -> dict:
     cfg = get_cfg()
     try:
-        # resume-less read: re-hydrate state from the checkpointer via the engine
-        from coach.interview.graph import _engine, _read_state  # internal helpers
-        appg, _d = _engine(cfg, get_deps())
-        gcfg = {"configurable": {"thread_id": session_id}}
-        snap = appg.get_state(gcfg)
-        values = {k: v for k, v in (snap.values or {}).items() if k != "_pending_answer"}
-        if not values:
+        # resume-less read: re-hydrate state from the checkpointer
+        state = get_session_state(session_id, cfg, get_deps())
+        if state is None:
             return _ok(None, "unknown session")
-        values.setdefault("session_id", session_id)
-        state = InterviewState.model_validate(values)
         return _ok(state.model_dump(mode="json"))
-    except Exception as exc:  # noqa: BLE001
-        return _err(f"failed to read session: {exc}")
+    except Exception:  # noqa: BLE001
+        logger.exception("interview_get failed")
+        return _err("failed to read session")
 
 
 # ---------------------------------------------------------------------------
@@ -258,9 +269,10 @@ async def interview_ws(ws: WebSocket) -> None:
             await ws.send_json({"type": "error", "payload": {"message": f"unknown type {mtype}"}})
     except WebSocketDisconnect:
         return
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
+        logger.exception("interview_ws failed")
         try:
-            await ws.send_json({"type": "error", "payload": {"message": str(exc)}})
+            await ws.send_json({"type": "error", "payload": {"message": "internal error"}})
         except Exception:
             pass
 
@@ -285,12 +297,9 @@ def interview_stream(session_id: str) -> StreamingResponse:
     def gen():
         text = ""
         try:
-            from coach.interview.graph import _engine
-            appg, _d = _engine(cfg, get_deps())
-            gcfg = {"configurable": {"thread_id": session_id}}
-            values = appg.get_state(gcfg).values or {}
-            q = values.get("current_question") or {}
-            text = (q or {}).get("prompt", "") if isinstance(q, dict) else ""
+            state = get_session_state(session_id, cfg, get_deps())
+            q = state.current_question if state else None
+            text = q.prompt if q else ""
         except Exception:
             text = ""
         if not text:
@@ -325,8 +334,9 @@ def read_memory() -> dict:
             "semantic": semantic,
             "weakpoints": store.weakpoints(),
         })
-    except Exception as exc:  # noqa: BLE001
-        return _ok({"episodes": [], "semantic": [], "weakpoints": []}, f"degraded: {exc}")
+    except Exception:  # noqa: BLE001
+        logger.exception("read_memory degraded")
+        return _ok({"episodes": [], "semantic": [], "weakpoints": []}, "memory unavailable")
 
 
 @app.get("/api/resume")
@@ -349,8 +359,9 @@ def read_resume() -> dict:
         except Exception:
             report = {}
         return _ok({"profile": profile.model_dump(mode="json"), "health_report": report})
-    except Exception as exc:  # noqa: BLE001
-        return _ok({"profile": None, "health_report": {}}, f"degraded: {exc}")
+    except Exception:  # noqa: BLE001
+        logger.exception("read_resume degraded")
+        return _ok({"profile": None, "health_report": {}}, "resume unavailable")
 
 
 @app.get("/api/review")
@@ -361,8 +372,9 @@ def read_review() -> dict:
         report = quality_report([], [], [], cfg)
         # schedule is empty until cards exist; keep the shape stable
         return _ok({"schedule": [], "quality_report": report})
-    except Exception as exc:  # noqa: BLE001
-        return _ok({"schedule": [], "quality_report": {}}, f"degraded: {exc}")
+    except Exception:  # noqa: BLE001
+        logger.exception("read_review degraded")
+        return _ok({"schedule": [], "quality_report": {}}, "review unavailable")
 
 
 @app.get("/api/health")

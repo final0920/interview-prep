@@ -145,6 +145,19 @@ class TestRedactPii:
         types = {s["type"] for s in stats["spans"]}
         assert "phone" in types and "email" in types
 
+    def test_spaced_phone_bypass_caught(self):
+        # consolidation into coach.pii: spaced digits must no longer bypass
+        masked, stats = redact_pii("电话: 188 8850 1310")
+        assert stats["counts"]["phone"] == 1
+        assert "188 8850 1310" not in masked
+
+    def test_coverage_not_hardcoded_when_clean(self):
+        # clean text reports 0 PII (counts are real, not faked to look masked)
+        _, stats = redact_pii("plain resume text with no contacts")
+        assert stats["total_pii"] == 0
+        assert stats["masked_pii"] == 0
+        assert stats["pii_masked"] is False
+
 
 # ============================================================
 # parse.py: parse_resume (text input, no PDF, no LLM)
