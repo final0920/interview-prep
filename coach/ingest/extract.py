@@ -12,10 +12,10 @@ import zipfile
 from pathlib import Path
 
 # ---- Zip safety limits -------------------------------------------------------
-_MAX_TOTAL_UNCOMPRESSED = 512 * 1024 ** 2  # 512 MB total uncompressed
-_MAX_FILES = 20_000
-_MAX_FILE_SIZE = 5 * 1024 ** 2            # 5 MB per member
-_MAX_RATIO = 200                          # compression ratio bomb guard
+_MAX_TOTAL_UNCOMPRESSED = 8 * 1024 ** 3  # 8 GB total uncompressed (trusted local repos)
+_MAX_FILES = 200_000                      # large monorepos can have many files
+_MAX_FILE_SIZE = 5 * 1024 ** 2            # 5 MB per member (skips huge data/blobs)
+_MAX_RATIO = 200                          # (reserved) per-member ratio is no longer a veto
 
 # ---- Default noise globs (deny-list) ----------------------------------------
 DEFAULT_NOISE_GLOBS: list[str] = [
@@ -97,13 +97,19 @@ def safe_unzip(
 
     with zipfile.ZipFile(zip_path, "r") as zf:
         # --- pre-scan for bombs / slip ---
+        # Security checks (symlink, zip-slip) apply to ALL members. The bomb
+        # budget (total uncompressed size + file count) counts only members we
+        # would actually extract: noise members (e.g. *.db, *.bin) are never
+        # written, so one highly-compressible binary must not abort the whole
+        # archive. Per-member decompression is bounded at extraction time by the
+        # per-member size cap + bounded read, so no single-member ratio veto is
+        # needed (it caused false positives on legitimate sparse binaries).
         total_unc = 0
         n_files = 0
         for info in zf.infolist():
             if info.is_dir():
                 continue
-            n_files += 1
-            total_unc += info.file_size
+            member_name = _fix_cp437_name(info.filename)
             # reject symlinks / other non-regular members. The high 16 bits of
             # external_attr hold the unix st_mode for unix-created zips. Entries
             # written via zipfile.writestr carry no file-type bits (S_IFMT == 0),
@@ -118,17 +124,14 @@ def safe_unzip(
                 )
             # zip-slip check: resolved path must be dest itself or below it.
             # A plain prefix check lets a sibling like '<dest>_evil' escape.
-            member_name = _fix_cp437_name(info.filename)
             resolved = (dest / member_name).resolve()
             if not (resolved == dest or dest in resolved.parents):
                 raise ValueError(f"zip-slip attempt: {info.filename!r}")
-            # compression-ratio bomb: check every compressed member (no size gate)
-            if info.compress_size > 0:
-                ratio = info.file_size / info.compress_size
-                if ratio > _MAX_RATIO:
-                    raise RuntimeError(
-                        f"zip-bomb: ratio {ratio:.0f}x in {info.filename!r}"
-                    )
+            # only members that survive the noise filter count toward the budget
+            if is_noise(member_name, noise_globs):
+                continue
+            n_files += 1
+            total_unc += info.file_size
 
         if total_unc > _MAX_TOTAL_UNCOMPRESSED:
             raise RuntimeError(

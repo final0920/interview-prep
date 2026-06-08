@@ -161,23 +161,36 @@ class TestSafeUnzip:
         with pytest.raises(ValueError, match="non-regular"):
             safe_unzip(z, dest, [])
 
-    def test_ratio_bomb_at_1mb_boundary(self, tmp_path):
-        # ~1 MB of identical bytes compresses far beyond the 200x ratio cap.
-        # The old guard only ran the ratio check for members > 1 MB; this
-        # member sits right at the boundary and must still be rejected.
-        z = tmp_path / "bomb.zip"
+    def test_high_ratio_member_not_fatal(self, tmp_path):
+        # A single highly-compressible member (e.g. a sparse binary) must NOT
+        # abort the whole archive. Real bomb protection is the total-size cap +
+        # the bounded per-member read, not a per-member ratio veto (which caused
+        # false positives on legitimate sparse binaries).
+        z = tmp_path / "ratio.zip"
         with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("big.txt", b"A" * (1024 ** 2))
+            zf.writestr("big.txt", b"A" * (1024 ** 2))  # 1 MB, ~1000x ratio
         dest = tmp_path / "out"
-        with pytest.raises(RuntimeError, match="zip-bomb"):
-            safe_unzip(z, dest, [])
+        extracted = safe_unzip(z, dest, [])  # must not raise
+        assert [p.name for p in extracted] == ["big.txt"]
 
-    def test_ratio_bomb_below_old_1mb_gate(self, tmp_path):
-        # a 500 KB highly-compressible member is under the old > 1 MB precondition
-        # but its ratio exceeds the cap -- the closed gap means it is now rejected.
-        z = tmp_path / "bomb_small.zip"
+    def test_noise_binary_high_ratio_skipped_not_fatal(self, tmp_path):
+        # Mirrors the real bug: a noise binary (*.db/*.bin) with a huge ratio
+        # used to abort ingestion of the whole zip. It must be skipped while
+        # genuine source files are still extracted.
+        z = tmp_path / "mixed.zip"
         with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("small.txt", b"A" * (500 * 1024))
+            zf.writestr("proj/data.db", b"A" * (1024 ** 2))   # noise + high ratio
+            zf.writestr("proj/main.cpp", "int main(){return 0;}\n")
+        dest = tmp_path / "out"
+        extracted = safe_unzip(z, dest, None)  # default noise globs include *.db
+        assert [p.name for p in extracted] == ["main.cpp"]
+
+    def test_total_uncompressed_cap_still_enforced(self, tmp_path, monkeypatch):
+        # The aggregate uncompressed budget is the real anti-bomb guard.
+        monkeypatch.setattr("coach.ingest.extract._MAX_TOTAL_UNCOMPRESSED", 100)
+        z = tmp_path / "big.zip"
+        with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("a.txt", b"x" * 500)  # 500 B non-noise > 100 B cap
         dest = tmp_path / "out"
         with pytest.raises(RuntimeError, match="zip-bomb"):
             safe_unzip(z, dest, [])
