@@ -1,5 +1,6 @@
-# All deps below are already present in the `iprep` conda env (D:\anaconda3\envs\iprep).
-# For a fresh environment: pip install -r requirements.txt
+# Dependency list (mirrors pyproject.toml [project.dependencies]).
+# Preferred setup is uv (see README): `uv venv && uv pip install -e .`
+# Plain pip fallback: `pip install -r requirements.txt`
 pydantic>=2
 pyyaml
 numpy

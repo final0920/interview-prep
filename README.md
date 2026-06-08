@@ -35,17 +35,22 @@ configurable (default: AI Application / LLM Engineering).
 
 Shared data contracts live in `coach/schemas.py`; configuration in `coach/config.py`.
 
-## Setup
+## Setup (uv)
 
-Python 3.12. Reuse an environment that already has the stack, or install fresh:
+Python 3.12 + [uv](https://docs.astral.sh/uv/). From the project root:
 
 ```bash
-pip install -r requirements.txt
-# optional, for local GPU embeddings + reranker:
-pip install sentence-transformers torch
-# optional, for cross-process interview checkpoint persistence:
-pip install langgraph-checkpoint-sqlite
+uv venv                            # create .venv (Python 3.12)
+uv pip install -e .                # core dependencies + the `coach` command
+uv pip install -e ".[dev]"         # + pytest, to run the test suite
+# optional: local GPU embeddings + reranker (BGE-M3) -- large download
+uv pip install -e ".[embeddings]"
+# optional: cross-process interview checkpoint persistence
+uv pip install langgraph-checkpoint-sqlite
 ```
+
+Run commands via `uv run coach ...`, or activate the venv first
+(`.venv\Scripts\activate` on Windows, `source .venv/bin/activate` elsewhere) and use `coach ...` directly.
 
 Config: copy `config.example.yaml` to `config.local.yaml` (gitignored) and set `llm.api_key` and
 `llm.base_url` for your gpt-5 gateway. If the gateway rejects the `/v1` suffix, remove it.
@@ -78,7 +83,7 @@ Flagged code is fully implemented and unit-tested but never required for the bas
 - Checkpointer: `SqliteSaver` if installed **else** `InMemorySaver`.
 - The test suite is fully offline (LLM mocked, no model downloads):
   ```bash
-  python -m pytest tests/ -q
+  uv run pytest -q
   ```
 
 ## Notes
